@@ -39,9 +39,9 @@
 -- action in the pure context. For example,
 --
 -- @
---   [appl| "Hello, " ++ $getLine ++ " and " ++ $getLine |]
+--   [appl| f $x (4 + $y) |]
 --      -- expands to:
---      (\\a b -> "Hello, " ++ a ++ " and " ++ b) \<$> getLine \<*> getLine
+--      (\\a b -> f a (4 + b)) \<$> x \<*> y
 -- @
 --
 -- In terms of types, the dollar sign is like a function of type @forall a. f a -> a@,
