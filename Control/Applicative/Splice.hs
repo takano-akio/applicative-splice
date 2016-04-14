@@ -47,7 +47,7 @@
 -- In terms of types, the dollar sign is like a function of type @forall a. f a -> a@,
 -- although it is not a real function.
 --
--- The type of the `as` expression will be in the same applicative as the
+-- The type of the 'appl' expression will be in the same applicative as the
 -- splices. This also means mutliple splices in the same block must
 -- share the same applicative.
 --
