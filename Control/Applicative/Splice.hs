@@ -3,6 +3,8 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 -- | This module defines a quasiquoter for making it easier to program with
 -- applicatives and monads.
@@ -63,86 +65,117 @@
 --      -- expands to:
 --      (\\a -> (\"Length\", length a)) \<$> m
 -- @
+--
+-- = Nested splices for monads
+--
+-- When your applicative is also a monad, you can have splices inside another
+-- splice. For example,
+--
+-- @
+--   [appl| $(putStrLn $ "Hello, " ++ $getLine) |]
+--      -- expands to:
+--      getLine >>= (\\a -> putStrLn $ "Hello, " ++ a)
+-- @
+--
+-- As in this case, no call to '<$>' is generated if the whole 'appl' block
+-- consists of a single splice.
 module Control.Applicative.Splice
   ( appl
   ) where
 
-import Control.Monad.Trans.State
-import Data.Foldable
+import Control.Monad.State
+import Control.Monad.Writer
 import Data.Generics
-import qualified Data.Sequence as Q
-import Language.Haskell.Exts
+import qualified Language.Haskell.Exts as H
 import qualified Language.Haskell.Meta as Meta
 import qualified Language.Haskell.TH as TH
 import qualified Language.Haskell.TH.Quote as TH
 
-data ApplicativeExp exp
-  = Pure exp
-  | Ap (ApplicativeExp exp) exp
+data ApplicativeExp var exp
+  = AdoJoin [(var, ApplicativeExp var exp)] exp
+  -- ado { v0 <- join e0; v1 <- join e1; ...; return eN }
   deriving (Functor)
 
 -- | The applicative-splice quasiquoter.
 appl :: TH.QuasiQuoter
 appl = TH.QuasiQuoter
-  { quoteExp = foo
+  { quoteExp = genExp
   , quotePat = err
   , quoteType = err
   , quoteDec = err
   }
   where
-    err _ = fail "This quasiquoter can only used in an expression"
+    err _ = fail "This quasiquoter can only be used in an expression"
 
-quote :: Exp -> ApplicativeExp Exp
-quote e0 = foldl' Ap (Pure fun) splices
+genExp :: String -> TH.ExpQ
+genExp str = do
+  e <- case H.parseExpWithMode parseMode str of
+    H.ParseOk e -> return e
+    H.ParseFailed loc msg -> fail $ show loc ++ ": " ++ msg
+  unApplicative $ bimapApplicativeExp Meta.toName Meta.toExp $ quote e
   where
-    fun = foldr mkLam body $ map argVar $ zipWith const [0..] $ toList splices
-    mkLam var e = Lambda uninformativeSrcloc [PVar var] e
-
-    (body, splices) = runState go Q.empty
-
-    go = everywhereM' (mkM onSplice) e0
-
-    onSplice (SpliceExp splice) = do
-      list <- get
-      let !n = length list
-      put $ list Q.|> e
-      return $ Var $ UnQual $ argVar n
-      where
-        !e = case splice of
-          IdSplice str -> Var $ UnQual $ Ident str
-          ParenSplice x -> x
-    onSplice e = return e
-
-argVar :: Int -> Name
-argVar = Ident . ("applicative_splice_" ++) . show
-
-foo :: String -> TH.ExpQ
-foo str = do
-  e <- case parseExpWithMode parseMode str of
-    ParseOk e -> return e
-    ParseFailed loc msg -> fail $ show loc ++ ": " ++ msg
-  unApplicative $ Meta.toExp <$> quote e
-  where
-    parseMode = defaultParseMode
-      { extensions = map EnableExtension [TemplateHaskell]
+    parseMode = H.defaultParseMode
+      { H.extensions = map H.EnableExtension [H.TemplateHaskell]
       }
 
-unApplicative :: ApplicativeExp TH.Exp -> TH.ExpQ
-unApplicative (Pure e) = [| pure $(pure e) |]
-unApplicative (Ap (Pure f) a) = [| $(pure f) <$> $(pure a) |]
-unApplicative (Ap f a) = [| $(unApplicative f) <*> $(pure a) |]
+bimapApplicativeExp
+    :: (a -> c)
+    -> (b -> d)
+    -> ApplicativeExp a b
+    -> ApplicativeExp c d
+bimapApplicativeExp f g = go
+  where
+    go (AdoJoin binds body) = AdoJoin (map goBind binds) (g body)
+    goBind (var, app) = (f var, go app)
+
+quote :: H.Exp -> ApplicativeExp H.Name H.Exp
+quote e0 = evalState (go e0) 0
+  where
+    go e = do
+      (body, binds) <- runWriterT (everywhereM' (mkM onSplice) e)
+      return $ AdoJoin binds body
+
+    onSplice (H.SpliceExp splice) = do
+      v <- gensym
+      e' <- lift $ go e
+      tell [(v, e')]
+      return $ H.Var $ H.UnQual v
+      where
+        !e = case splice of
+          H.IdSplice str -> H.Var $ H.UnQual $ H.Ident str
+          H.ParenSplice x -> x
+    onSplice e = return e
+
+    gensym = do
+      n <- get
+      put $! n + 1
+      return $ argVar n
+
+argVar :: Int -> H.Name
+argVar = H.Ident . ("applicative_splice_" ++) . show
+
+unApplicative :: ApplicativeExp TH.Name TH.Exp -> TH.ExpQ
+unApplicative (AdoJoin (unzip -> (vars, args)) body) = case args of
+  [] -> [| pure $(pure body) |]
+  first:rest -> foldl mkAp (join $ mkFmap <$> fun <*> unJoin first) rest
+  where
+    fun = TH.lamE (map TH.varP vars) (pure body)
+    mkAp f a = [| $f <*> $(unJoin a) |]
+    mkFmap f a
+      | isTrivialIdentity f = pure a
+      | otherwise = [| $(pure f) <$> $(pure a) |]
+    isTrivialIdentity (TH.LamE [TH.VarP v] e) = e == TH.VarE v
+    isTrivialIdentity _ = False
+
+unJoin :: ApplicativeExp TH.Name TH.Exp -> TH.ExpQ
+unJoin (AdoJoin binds body) = foldr bind (pure body) binds
+  where
+    bind (v, a) b = [| $(unJoin a) >>= \ $(TH.varP v) -> $b |]
 
 everywhereM' :: (Monad m) => GenericM m -> GenericM m
 everywhereM' f x = do 
   x' <- f x
   gmapM (everywhereM' f) x'
-
-uninformativeSrcloc :: SrcLoc
-uninformativeSrcloc = SrcLoc
-  { srcFilename = "<none>"
-  , srcLine = 0
-  , srcColumn = 0
-  }
 
 view :: TH.ExpQ -> TH.ExpQ
 view eq = do
