@@ -177,8 +177,8 @@ everywhereM' f x = do
   x' <- f x
   gmapM (everywhereM' f) x'
 
-view :: TH.ExpQ -> TH.ExpQ
-view eq = do
+_view :: TH.ExpQ -> TH.ExpQ
+_view eq = do
   e <- eq
   let str = TH.pprint e
   [| putStrLn str |]

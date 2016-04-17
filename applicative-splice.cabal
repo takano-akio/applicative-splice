@@ -3,8 +3,14 @@
 
 name:                applicative-splice
 version:             0.0.0.0
-synopsis:            A generalization of idiom brackets, lets you to write monadic/applicative programs in direct style.
--- description:         
+synopsis:            Write applicative programs in direct style (generalizes idiom brackets).
+description:         This package defines a quasiquoter that lets you write
+                     your monadic/applicative programs in direct style, i.e.
+                     the style in which you would write it in a
+                     language with side effects. Unlike actual side effects,
+                     this does not affect purity of the langauge, because it's
+                     just a syntactic sugar around the usual (\<$>), (\<*>) and
+                     (>>=) functions.
 homepage:            https://github.com/takano-akio/applicative-splice
 license:             PublicDomain
 license-file:        LICENSE
@@ -15,6 +21,10 @@ category:            Control
 build-type:          Simple
 -- extra-source-files:  
 cabal-version:       >=1.10
+
+source-repository head
+  type: git
+  location: https://github.com/takano-akio/applicative-splices.git
 
 library
   exposed-modules:     Control.Applicative.Splice
